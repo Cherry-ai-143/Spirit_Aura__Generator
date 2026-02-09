@@ -10,15 +10,16 @@ IMAGE_PATH = "FIRST_LOOK.webp"
 AUDIO_PATH = "aura_music2.mp3"
 
 LINE_THICKNESS = 2
-POINT_SKIP = 5               # speed vs quality
-FRAME_UPDATE_SKIP = 12       # batch UI updates
-DRAW_SLEEP = 0.02            # ⏱ sketch timing (~50–55 sec)
+POINT_SKIP = 5                 # keeps detail
+FRAME_UPDATE_SKIP = 18         # 👈 smoother on Streamlit Cloud
+DRAW_SLEEP = 0.03              # 👈 avoids UI freeze
 
 CANNY_LOW = 80
 CANNY_HIGH = 180
 COLOR_CLUSTERS = 8
 
-REVEAL_STEPS = 30            # ~10–12 sec reveal
+REVEAL_STEPS = 35
+REVEAL_SLEEP = 0.03
 FADE_ZONE = 40
 # =========================================
 
@@ -26,34 +27,40 @@ st.set_page_config(page_title="Spirit Aura Generator", layout="wide")
 st.title("✨ Spirit Aura Generator")
 
 # ---------- SESSION STATE ----------
-if "music_started" not in st.session_state:
-    st.session_state.music_started = False
+if "started" not in st.session_state:
+    st.session_state.started = False
+
+if "music_loaded" not in st.session_state:
+    st.session_state.music_loaded = False
 
 start = st.button("Generate Aura ✨")
-if not start:
+
+if start:
+    st.session_state.started = True
+
+if not st.session_state.started:
     st.stop()
 
-# ---------- AUTO-PLAY + LOOP AUDIO ----------
-if not st.session_state.music_started:
+# ---------- AUDIO (USER-INITIATED, LOOPED) ----------
+if not st.session_state.music_loaded:
     with open(AUDIO_PATH, "rb") as f:
         audio_bytes = f.read()
 
-    audio_base64 = base64.b64encode(audio_bytes).decode()
+    audio_b64 = base64.b64encode(audio_bytes).decode()
+
     audio_html = f"""
-    <audio id="bgm" autoplay loop>
-      <source src="data:audio/mp3;base64,{audio_base64}" type="audio/mp3">
+    <audio id="bgm" loop>
+      <source src="data:audio/mp3;base64,{audio_b64}" type="audio/mp3">
     </audio>
     <script>
-      var audio = document.getElementById("bgm");
-      if (audio) {{
-          audio.volume = 0.6;
-          audio.play();
-      }}
+      const audio = document.getElementById("bgm");
+      audio.volume = 0.6;
+      audio.play();
     </script>
     """
     components.html(audio_html, height=0)
-    st.session_state.music_started = True
-# ------------------------------------------
+    st.session_state.music_loaded = True
+# -----------------------------------------------
 
 # ---------- LOAD IMAGE ----------
 img = cv2.imread(IMAGE_PATH)
@@ -81,7 +88,9 @@ gray = cv2.GaussianBlur(gray, (5, 5), 0)
 edges = cv2.Canny(gray, CANNY_LOW, CANNY_HIGH)
 
 contours, _ = cv2.findContours(
-    edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    edges,
+    cv2.RETR_EXTERNAL,
+    cv2.CHAIN_APPROX_NONE   # 👈 keeps line clarity
 )
 
 # ---------- CANVASES ----------
@@ -102,17 +111,12 @@ for contour in contours:
         p1 = contour[i - POINT_SKIP][0]
         p2 = contour[i][0]
 
-        cv2.line(
-            sketch_canvas, tuple(p1), tuple(p2),
-            (0, 0, 0), LINE_THICKNESS
-        )
-        cv2.line(
-            reveal_mask, tuple(p1), tuple(p2),
-            255, LINE_THICKNESS + 2
-        )
+        cv2.line(sketch_canvas, tuple(p1), tuple(p2), (0, 0, 0), LINE_THICKNESS)
+        cv2.line(reveal_mask, tuple(p1), tuple(p2), 255, LINE_THICKNESS + 2)
 
         draw_count += 1
 
+        # 🔑 Batch UI updates
         if draw_count % FRAME_UPDATE_SKIP == 0:
             mask_3ch = cv2.cvtColor(reveal_mask, cv2.COLOR_GRAY2RGB)
             revealed_color = cv2.bitwise_and(color_img, mask_3ch)
@@ -128,34 +132,22 @@ for contour in contours:
 
 # ================= FINAL REVEAL =================
 for step in range(REVEAL_STEPS + 1):
-    mask = np.zeros((h, w), dtype=np.float32)
+    alpha_mask = np.zeros((h, w), dtype=np.float32)
     reveal_height = int((step / REVEAL_STEPS) * h)
 
     if reveal_height > 0:
-        mask[h - reveal_height : h, :] = 1.0
+        alpha_mask[h - reveal_height : h, :] = 1.0
         y_start = max(h - reveal_height - FADE_ZONE, 0)
         for y in range(y_start, h - reveal_height):
-            mask[y, :] = (y - y_start) / FADE_ZONE
+            alpha_mask[y, :] = (y - y_start) / FADE_ZONE
 
-    mask_3ch = np.dstack([mask] * 3)
+    alpha_3ch = np.dstack([alpha_mask] * 3)
     blended = (
-        final_frame * (1 - mask_3ch) +
-        img * mask_3ch
+        final_frame * (1 - alpha_3ch) +
+        img * alpha_3ch
     ).astype(np.uint8)
 
     frame_holder.image(blended)
-    time.sleep(0.02)
-
-# ---------- STOP MUSIC ----------
-stop_audio_html = """
-<script>
-  var audio = document.getElementById("bgm");
-  if (audio) {
-      audio.pause();
-      audio.currentTime = 0;
-  }
-</script>
-"""
-components.html(stop_audio_html, height=0)
+    time.sleep(REVEAL_SLEEP)
 
 st.success("✨ Aura Generated Successfully ✨")
